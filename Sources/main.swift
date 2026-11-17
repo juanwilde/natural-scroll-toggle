@@ -204,10 +204,15 @@ final class StatusController: NSObject, NSApplicationDelegate {
             return
         }
         log("Aplicando natural scrolling -> \(desired ? "ON" : "OFF")")
-        if toggleViaSettingsUI(from: current, prompt: false) {
+        let trusted = AXIsProcessTrustedWithOptions(nil)
+        if trusted && toggleViaSettingsUI(from: current, prompt: false) {
             log("Aplicado via Ajustes del Sistema")
         } else {
-            log("Fallback: escritura directa")
+            if !trusted {
+                log("SIN permiso de Accesibilidad: se usa escritura directa (NO aplica en caliente). Activalo en Ajustes > Privacidad y seguridad > Accesibilidad.")
+            } else {
+                log("No se pudo operar el interruptor de Ajustes; fallback a escritura directa")
+            }
             setNaturalScrollingDirect(desired)
         }
     }
