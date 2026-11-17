@@ -158,7 +158,7 @@ final class StatusController: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        createStatusItem()
         watcher = MouseWatcher { [weak self] connected in
             guard let self, self.autoMode else { return }
             self.requestApply(!connected)
@@ -167,8 +167,26 @@ final class StatusController: NSObject, NSApplicationDelegate {
         Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.refresh()
         }
-        log("Iniciado (modo \(autoMode ? "automatico" : "manual"))")
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        log("Iniciado v\(version) pid=\(ProcessInfo.processInfo.processIdentifier) (modo \(autoMode ? "automatico" : "manual"))")
+        if let button = statusItem.button {
+            log("Icono: frame=\(button.frame) imagen=\(button.image != nil ? "ok" : "ausente")")
+        } else {
+            log("Icono: SIN BOTON (se reintentara en el proximo refresco)")
+        }
         watcher?.reevaluate()
+
+        // Pedir el permiso de Accesibilidad al arrancar si falta: el cambio
+        // de scroll solo es efectivo en caliente con este permiso.
+        if !AXIsProcessTrustedWithOptions(nil) {
+            log("Accesibilidad: sin permiso; solicitandolo")
+            let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+            _ = AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary)
+        }
+    }
+
+    private func createStatusItem() {
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     }
 
     // MARK: Applying changes
@@ -378,6 +396,12 @@ final class StatusController: NSObject, NSApplicationDelegate {
     // MARK: UI
 
     private func refresh() {
+        // La barra de menús puede retirar el item en algunas condiciones:
+        // recrearlo si desaparecio.
+        if statusItem == nil || statusItem.button == nil {
+            createStatusItem()
+            shownState = nil
+        }
         let on = naturalScrollingEnabled()
         if on == shownState { return }
         shownState = on
@@ -389,6 +413,13 @@ final class StatusController: NSObject, NSApplicationDelegate {
             NSImage.SymbolConfiguration(paletteColors: [color]))
         button.image = configured ?? symbol
         button.image?.isTemplate = false
+        if button.image == nil {
+            // Fallback visible si el simbolo SF no cargara en este Mac
+            button.title = on ? "⇅" : "↑↓"
+            button.appearance = nil
+        } else {
+            button.title = ""
+        }
         button.toolTip = on ? "Natural scrolling: activado" : "Natural scrolling: desactivado"
         statusItem.menu = makeMenu(on: on)
     }

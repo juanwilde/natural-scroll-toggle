@@ -82,16 +82,26 @@ dependencies.
 
 ## Install
 
-### DMG (easiest)
+### PKG (recommended)
 
-Download `NaturalScrollToggle.dmg` from
-[Releases](https://github.com/juanwilde/natural-scroll-toggle/releases),
-open it, and double-click **Install.command**. It copies the app to
-`~/Applications`, sets it to start at login, and launches it — no admin
-rights needed. Since the app is ad-hoc signed, macOS may show an
-"unidentified developer" warning: allow it in System Settings ▸ Privacy &
-Security (or right-click ▸ Open). The installer also asks for the
-**Accessibility** permission the first time — see above.
+Download `NaturalScrollToggle.pkg` from
+[Releases](https://github.com/juanwilde/natural-scroll-toggle/releases) and
+double-click it. It installs the app to `/Applications` (admin password
+required, as with any installer), registers it to start at login for your
+user, and launches it. Since the pkg is unsigned, macOS may show a warning:
+right-click the pkg ▸ **Open**, or allow it in System Settings ▸ Privacy &
+Security.
+
+On first launch the app asks for the **Accessibility** permission — approve
+it when prompted (System Settings ▸ Privacy & Security ▸ Accessibility), or
+toggle once from the menu bar icon and approve from the dialog. Without it,
+changes are saved but not applied until apps restart.
+
+### DMG
+
+Download `NaturalScrollToggle.dmg`, open it, and double-click
+**Install.command** — same result as the pkg, but without an admin password
+(the app goes to `~/Applications`).
 
 ### From a release tarball
 
@@ -117,9 +127,17 @@ so it starts at login. No administrator rights needed.
 
 ## Uninstall
 
+From a repo/tarball checkout:
+
 ```sh
 ./uninstall.sh
 ```
+
+This removes everything: the app (both `~/Applications` and `/Applications`
+locations), the LaunchAgent, preferences, logs, support files, the TCC
+Accessibility permission, and leftovers of the old auto-switcher. If the app
+was installed with the pkg into `/Applications` and the script cannot remove
+it, run `sudo rm -rf /Applications/NaturalScrollToggle.app`.
 
 ## Updating
 

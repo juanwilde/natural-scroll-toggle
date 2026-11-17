@@ -1,0 +1,47 @@
+#!/bin/bash
+# Post-install script for NaturalScrollToggle.pkg
+# Runs as root: fixes permissions/quarantine on the app and registers the
+# LaunchAgent for the console user so the app starts at that user's login.
+set -e
+
+APP="/Applications/NaturalScrollToggle.app"
+BIN="$APP/Contents/MacOS/NaturalScrollToggle"
+
+chmod +x "$BIN"
+xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
+
+CONSOLE_USER=$(stat -f%Su /dev/console)
+CONSOLE_UID=$(id -u "$CONSOLE_USER")
+USER_HOME=$(eval echo "~$CONSOLE_USER")
+LAUNCH_AGENTS="$USER_HOME/Library/LaunchAgents"
+PLIST="$LAUNCH_AGENTS/com.wilde.naturalscrolltoggle.plist"
+
+mkdir -p "$LAUNCH_AGENTS"
+cat > "$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.wilde.naturalscrolltoggle</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$BIN</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+</dict>
+</plist>
+EOF
+chown "$CONSOLE_USER" "$PLIST" 2>/dev/null || true
+
+launchctl asuser "$CONSOLE_UID" launchctl unload "$PLIST" 2>/dev/null || true
+launchctl asuser "$CONSOLE_UID" launchctl load -w "$PLIST" || true
+
+echo "Natural Scroll Toggle installed to /Applications."
+echo "It starts at login and will ask for Accessibility permission on first use."
