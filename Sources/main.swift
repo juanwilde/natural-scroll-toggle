@@ -344,6 +344,7 @@ final class StatusController: NSObject, NSApplicationDelegate {
             }
         }
 
+        var tabPressAttempts = 0
         func pressScrollTab() -> Bool {
             let candidates = findAll(window, role: "AXCheckBox")
                 + findAll(window, role: "AXButton")
@@ -352,12 +353,19 @@ final class StatusController: NSObject, NSApplicationDelegate {
             for el in candidates {
                 let l = elementLabel(el) ?? axString(el, "AXTitle") ?? axString(el, "AXDescription") ?? ""
                 let lower = l.lowercased()
-                if lower.contains("scroll"), lower.contains("zoom") {
+                guard lower.contains("scroll"), lower.contains("zoom") else { continue }
+                tabPressAttempts += 1
+                log("AX: pestana etiqueta='\(l)' intento=\(tabPressAttempts)")
+                if tabPressAttempts == 2, let p = axPoint(el, "AXPosition"), let s = axSize(el, "AXSize") {
+                    // AXPress did not switch the pane: click the tab directly
+                    AXUIElementPerformAction(window, "AXRaise" as CFString)
+                    Thread.sleep(forTimeInterval: 0.2)
+                    clickAt(CGPoint(x: p.x + s.width / 2, y: p.y + s.height / 2))
+                } else {
                     AXUIElementPerformAction(el, "AXPress" as CFString)
                     AXUIElementSetAttributeValue(el, "AXValue" as CFString, kCFBooleanTrue)
-                    log("AX: pestana pulsada etiqueta='\(l)'")
-                    return true
                 }
+                return true
             }
             return false
         }
@@ -452,6 +460,35 @@ final class StatusController: NSObject, NSApplicationDelegate {
             }
         }
         log("AXDUMP: end (lines=\(lines))")
+    }
+
+    private func axPoint(_ el: AXUIElement, _ attr: String) -> CGPoint? {
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, attr as CFString, &ref) == .success,
+              let val = ref else { return nil }
+        var p = CGPoint.zero
+        guard AXValueGetType(val as! AXValue) == .cgPoint else { return nil }
+        AXValueGetValue(val as! AXValue, .cgPoint, &p)
+        return p
+    }
+
+    private func axSize(_ el: AXUIElement, _ attr: String) -> CGSize? {
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, attr as CFString, &ref) == .success,
+              let val = ref else { return nil }
+        var s = CGSize.zero
+        guard AXValueGetType(val as! AXValue) == .cgSize else { return nil }
+        AXValueGetValue(val as! AXValue, .cgSize, &s)
+        return s
+    }
+
+    private func clickAt(_ point: CGPoint) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+        CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+        usleep(60_000)
+        CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+        log("AX: clic sintetico en (\(Int(point.x)), \(Int(point.y)))")
     }
 
     private func checkboxValue(_ cb: AXUIElement) -> String? {
