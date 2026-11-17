@@ -188,6 +188,21 @@ final class StatusController: NSObject, NSApplicationDelegate {
             let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
             _ = AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary)
         }
+        ensureSupportFiles()
+    }
+
+    private func ensureSupportFiles() {
+        guard !FileManager.default.fileExists(atPath: ignoreFile) else { return }
+        try? FileManager.default.createDirectory(atPath: supportDir, withIntermediateDirectories: true)
+        let template = """
+        # Devices with a dormant "mouse" HID interface that should NOT trigger
+        # mouse mode (keyboards, audio interfaces, docks...). One exact product
+        # name per line. Detected devices are listed in:
+        # \(logFile)
+
+        """
+        try? template.write(toFile: ignoreFile, atomically: true, encoding: .utf8)
+        log("Creado \(ignoreFile) (editable)")
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -297,30 +312,63 @@ final class StatusController: NSObject, NSApplicationDelegate {
         }
         guard let window else { return false }
 
-        // "Scroll & Zoom" tab: middle radio button; press only if not active
-        guard let radios = waitForElements(in: window, role: "AXRadioButton", minCount: 3, timeout: 8),
-              radios.count >= 3 else { return false }
-        var selectedRef: CFTypeRef?
-        AXUIElementCopyAttributeValue(radios[1], "AXValue" as CFString, &selectedRef)
-        if (selectedRef as? String) != "1" {
-            AXUIElementPerformAction(radios[1], "AXPress" as CFString)
-            Thread.sleep(forTimeInterval: 0.3)
+        // Select the "Scroll & Zoom" tab if a tab group exists (identify the
+        // radio by its label; tolerate structural changes in newer macOS).
+        let radios = findAll(window, role: "AXRadioButton")
+        if !radios.isEmpty {
+            let radioLabels = radios.map { elementLabel($0) ?? "?" }
+            log("AX: radios=\(radios.count) etiquetas=\(radioLabels.joined(separator: " | "))")
+            let targetRadio = zip(radios, radioLabels).first { $1.contains("Scroll") }?.0
+                ?? (radios.count >= 3 ? radios[1] : nil)
+            if let r = targetRadio, checkboxValue(r) != "1" {
+                AXUIElementPerformAction(r, "AXPress" as CFString)
+                Thread.sleep(forTimeInterval: 0.4)
+            }
         }
 
-        // First checkbox in the pane content = "Natural scrolling"
+        // Press ONLY the checkbox labeled exactly "Natural scrolling".
         guard let boxes = waitForElements(in: window, role: "AXCheckBox", minCount: 1, timeout: 8),
-              !boxes.isEmpty else { return false }
-        AXUIElementPerformAction(boxes[0], "AXPress" as CFString)
+              !boxes.isEmpty else {
+            log("AX: no se encontraron checkboxes en la ventana")
+            return false
+        }
+        let labels = boxes.map { elementLabel($0) ?? "?" }
+        log("AX: checkboxes=\(boxes.count) etiquetas=\(labels.joined(separator: " | "))")
+        guard let target = boxes.first(where: { elementLabel($0) == "Natural scrolling" }) else {
+            log("AX: no hay checkbox 'Natural scrolling'; no se pulsa nada (fallback seguro)")
+            return false
+        }
+        log("AX: objetivo='Natural scrolling' valor-antes=\(checkboxValue(target) ?? "?")")
+        AXUIElementPerformAction(target, "AXPress" as CFString)
 
         var changed = false
         for _ in 0..<30 where !changed {
             Thread.sleep(forTimeInterval: 0.1)
             changed = naturalScrollingEnabled() != current
         }
+        log("AX: valor-despues=\(checkboxValue(target) ?? "?") cambiada=\(changed)")
 
         // Keep the window for reuse; close it when this app quits.
         settingsWindow = window
         return changed
+    }
+
+    private func axString(_ el: AXUIElement, _ attr: String) -> String? {
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, attr as CFString, &ref) == .success else { return nil }
+        return ref as? String
+    }
+
+    private func elementLabel(_ el: AXUIElement) -> String? {
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, "AXTitleUIElement" as CFString, &ref) == .success,
+              let obj = ref else { return nil }
+        let labelEl = obj as! AXUIElement  // AXTitleUIElement always returns an AXUIElement
+        return axString(labelEl, "AXValue")
+    }
+
+    private func checkboxValue(_ cb: AXUIElement) -> String? {
+        axString(cb, "AXValue")
     }
 
     private func waitForWindow(_ appEl: AXUIElement, timeout: TimeInterval) -> AXUIElement? {
