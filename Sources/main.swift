@@ -2,64 +2,223 @@ import AppKit
 import ApplicationServices
 import CoreFoundation
 import Foundation
+import IOKit
+import IOKit.hid
 
-// Icono en la barra de menus de macOS para activar/desactivar el
-// "Natural scrolling".
-// Verde = activado, rojo = desactivado. Clic en el icono y luego en el
-// primer elemento del menu para alternar.
+// Natural Scroll Toggle
+// ---------------------
+// Menu bar toggle for macOS "Natural scrolling" with an optional automatic
+// mode:
 //
-// El toggle acciona el interruptor real de Ajustes del Sistema (mismo
-// efecto que hacerlo a mano): la escritura directa de la preferencia no
-// la aplica en caliente en macOS recientes. Requiere permiso de
-// Accesibilidad para la app (se solicita una vez). Si no hay permiso o
-// falla, se usa la escritura directa como fallback.
+//   - Automatic mode (default): watches for external mice (USB, Bluetooth,
+//     2.4 GHz dongles). Mouse connected -> Natural scrolling OFF; no mouse ->
+//     ON. Designed for people who like natural scrolling on the trackpad but
+//     classic scrolling with a mouse wheel.
+//   - Manual mode: click the menu item to flip the setting; this disables
+//     automatic mode until re-enabled from the menu.
+//
+// Why not just write com.apple.swipescrolldirection? On modern macOS a direct
+// preference write does NOT apply the change to the running system. Instead,
+// the app operates the real System Settings switch (Trackpad pane) through
+// the Accessibility API, which is exactly what a human toggle does, so the
+// change takes effect everywhere immediately. If the Accessibility permission
+// is missing, it falls back to the direct write (+ cfprefsd/hidd restart).
+
+private let prefKey = "com.apple.swipescrolldirection" as CFString
+private let supportDir = NSHomeDirectory() + "/Library/Application Support/natural-scroll-toggle"
+private let ignoreFile = supportDir + "/ignore.txt"
+private let logFile = NSHomeDirectory() + "/Library/Logs/natural-scroll-toggle.log"
+
+func log(_ message: String) {
+    let line = "[\(ISO8601DateFormatter().string(from: Date()))] \(message)\n"
+    FileHandle.standardOutput.write(Data(line.utf8))
+    if let data = line.data(using: .utf8),
+       let handle = FileHandle(forWritingAtPath: logFile) {
+        handle.seekToEndOfFile()
+        handle.write(data)
+        handle.closeFile()
+    } else if let data = line.data(using: .utf8) {
+        try? data.write(to: URL(fileURLWithPath: logFile))
+    }
+}
+
+func naturalScrollingEnabled() -> Bool {
+    CFPreferencesCopyAppValue(prefKey, kCFPreferencesAnyApplication) as? Bool ?? false
+}
+
+func setNaturalScrollingDirect(_ enabled: Bool) {
+    CFPreferencesSetValue(prefKey, enabled as CFPropertyList,
+                          kCFPreferencesAnyApplication,
+                          kCFPreferencesCurrentUser,
+                          kCFPreferencesAnyHost)
+    CFPreferencesSynchronize(kCFPreferencesAnyApplication,
+                             kCFPreferencesCurrentUser,
+                             kCFPreferencesAnyHost)
+    for daemon in ["cfprefsd", "hidd"] {
+        let kill = Process()
+        kill.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+        kill.arguments = [daemon]
+        try? kill.run()
+        kill.waitUntilExit()
+    }
+}
+
+// MARK: - Mouse watcher (IOKit HID)
+
+final class MouseWatcher {
+    private let manager: IOHIDManager
+    private let onChange: (Bool) -> Void
+    private var debounce: DispatchWorkItem?
+    private var lastState: Bool?
+
+    init(onChange: @escaping (Bool) -> Void) {
+        self.onChange = onChange
+        manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
+        IOHIDManagerSetDeviceMatching(manager,
+            [kIOHIDDeviceUsagePageKey: kHIDPage_GenericDesktop,
+             kIOHIDDeviceUsageKey: kHIDUsage_GD_Mouse] as CFDictionary)
+
+        let callback: IOHIDDeviceCallback = { context, _, _, device in
+            guard let context else { return }
+            let watcher = Unmanaged<MouseWatcher>.fromOpaque(context).takeUnretainedValue()
+            let name = IOHIDDeviceGetProperty(device, kIOHIDProductKey as CFString) as? String ?? "?"
+            log("Evento HID: \(name)")
+            watcher.scheduleReevaluate()
+        }
+        let ctx = Unmanaged.passUnretained(self).toOpaque()
+        IOHIDManagerRegisterDeviceMatchingCallback(manager, callback, ctx)
+        IOHIDManagerRegisterDeviceRemovalCallback(manager, callback, ctx)
+        IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetCurrent(), CFRunLoopMode.defaultMode.rawValue)
+        IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+        scheduleHeartbeat()
+    }
+
+    var mouseConnected: Bool { lastState ?? false }
+
+    private func loadIgnoredProducts() -> Set<String> {
+        guard let text = try? String(contentsOfFile: ignoreFile, encoding: .utf8) else { return [] }
+        return Set(text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") })
+    }
+
+    private func isExternalMouse(_ device: IOHIDDevice, ignored: Set<String>) -> Bool {
+        let name = (IOHIDDeviceGetProperty(device, kIOHIDProductKey as CFString) as? String) ?? ""
+        let lower = name.lowercased()
+        if lower.contains("trackpad") || lower.contains("internal") { return false }
+        if ignored.contains(name) { return false }
+        let transport = (IOHIDDeviceGetProperty(device, kIOHIDTransportKey as CFString) as? String) ?? ""
+        if transport == "SPI" || transport == "I2C" || transport == "FIFO" { return false }
+        return true
+    }
+
+    func reevaluate() {
+        let ignored = loadIgnoredProducts()
+        let devices = IOHIDManagerCopyDevices(manager) as? Set<IOHIDDevice> ?? []
+        let mice = devices.filter { isExternalMouse($0, ignored: ignored) }
+        let names = mice.map { IOHIDDeviceGetProperty($0, kIOHIDProductKey as CFString) as? String ?? "?" }
+        let connected = !mice.isEmpty
+        if connected != lastState {
+            lastState = connected
+            log("Ratones externos: \(connected ? names.joined(separator: ", ") : "ninguno")")
+            onChange(connected)
+        }
+    }
+
+    func scheduleReevaluate() {
+        debounce?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.reevaluate() }
+        debounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7, execute: work)
+    }
+
+    private func scheduleHeartbeat() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            self?.reevaluate()
+            self?.scheduleHeartbeat()
+        }
+    }
+}
+
+// MARK: - Menu bar app
 
 final class StatusController: NSObject, NSApplicationDelegate {
-    private var statusItem: NSStatusItem!
-    private let prefKey = "com.apple.swipescrolldirection" as CFString
     private let settingsBundleID = "com.apple.systempreferences"
     private let trackpadPaneURL = URL(string: "x-apple.systempreferences:com.apple.Trackpad-Settings.extension")!
+    private let defaults = UserDefaults.standard
+    private var statusItem: NSStatusItem!
+    private var watcher: MouseWatcher?
     private var shownState: Bool?
-    private var toggling = false
+    private var applyBusy = false
+    private var pendingDesired: Bool?
+
+    private var autoMode: Bool {
+        get { defaults.object(forKey: "autoMode") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "autoMode") }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        watcher = MouseWatcher { [weak self] connected in
+            guard let self, self.autoMode else { return }
+            self.requestApply(!connected)
+        }
         refresh()
         Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.refresh()
         }
+        log("Iniciado (modo \(autoMode ? "automatico" : "manual"))")
+        watcher?.reevaluate()
     }
 
-    private var naturalEnabled: Bool {
-        CFPreferencesCopyAppValue(prefKey, kCFPreferencesAnyApplication) as? Bool ?? false
-    }
+    // MARK: Applying changes
 
-    // MARK: - Alternar via Ajustes del Sistema (mismo efecto que a mano)
-
-    @objc private func toggle() {
-        guard !toggling else { return }
-        toggling = true
-        let previous = naturalEnabled
+    /// Applies `desired` if the current setting differs. Serialized; requests
+    /// received while busy are queued and applied afterwards.
+    private func requestApply(_ desired: Bool) {
+        if applyBusy {
+            pendingDesired = desired
+            return
+        }
+        applyBusy = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let ok = self.toggleViaSettingsUI(from: previous)
-            if !ok {
-                FileHandle.standardError.write(Data("fallback: escritura directa\n".utf8))
-                self.setNaturalDirect(!previous)
-            }
-            Thread.sleep(forTimeInterval: 0.6)
+            self.performApply(desired)
             DispatchQueue.main.async {
+                self.applyBusy = false
                 self.shownState = nil
                 self.refresh()
-                self.toggling = false
+                if let pending = self.pendingDesired {
+                    self.pendingDesired = nil
+                    if pending != naturalScrollingEnabled() {
+                        self.requestApply(pending)
+                    }
+                }
             }
         }
     }
 
-    private func toggleViaSettingsUI(from current: Bool) -> Bool {
+    private func performApply(_ desired: Bool) {
+        let current = naturalScrollingEnabled()
+        guard current != desired else {
+            log("Ya en el estado deseado: \(desired ? "ON" : "OFF")")
+            return
+        }
+        log("Aplicando natural scrolling -> \(desired ? "ON" : "OFF")")
+        if toggleViaSettingsUI(from: current, prompt: false) {
+            log("Aplicado via Ajustes del Sistema")
+        } else {
+            log("Fallback: escritura directa")
+            setNaturalScrollingDirect(desired)
+        }
+    }
+
+    /// Flips the real System Settings switch via the Accessibility API.
+    /// Returns true if the preference value actually changed.
+    private func toggleViaSettingsUI(from current: Bool, prompt: Bool) -> Bool {
         let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-        let trusted = AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary)
-        guard trusted else {
-            DispatchQueue.main.async { self.showAccessibilityHelp() }
+        let options: CFDictionary? = prompt ? [promptKey: true] as CFDictionary : nil
+        guard AXIsProcessTrustedWithOptions(options) else {
+            if prompt { DispatchQueue.main.async { self.showAccessibilityHelp() } }
             return false
         }
 
@@ -67,7 +226,6 @@ final class StatusController: NSObject, NSApplicationDelegate {
             .runningApplications(withBundleIdentifier: settingsBundleID)
             .contains { !$0.isTerminated }
 
-        // Abrir el panel Trackpad sin robar el foco
         let semaphore = DispatchSemaphore(value: 0)
         var openedApp: NSRunningApplication?
         let config = NSWorkspace.OpenConfiguration()
@@ -85,25 +243,23 @@ final class StatusController: NSObject, NSApplicationDelegate {
         let appEl = AXUIElementCreateApplication(app.processIdentifier)
         guard let window = waitForWindow(appEl, timeout: 10) else { return false }
 
-        // Pestaña "Scroll & Zoom": radio del medio del grupo de pestanas
+        // "Scroll & Zoom" tab: middle radio button of the pane's tab group
         guard let radios = waitForElements(in: window, role: "AXRadioButton", minCount: 3, timeout: 8),
               radios.count >= 3 else { return false }
         AXUIElementPerformAction(radios[1], "AXPress" as CFString)
         Thread.sleep(forTimeInterval: 0.5)
 
-        // Primer checkbox del contenido = "Natural scrolling"
+        // First checkbox in the pane content = "Natural scrolling"
         guard let boxes = waitForElements(in: window, role: "AXCheckBox", minCount: 1, timeout: 8),
               !boxes.isEmpty else { return false }
         AXUIElementPerformAction(boxes[0], "AXPress" as CFString)
 
-        // Verificar que el valor cambio
         var changed = false
         for _ in 0..<30 where !changed {
             Thread.sleep(forTimeInterval: 0.1)
-            changed = naturalEnabled != current
+            changed = naturalScrollingEnabled() != current
         }
 
-        // Cerrar la ventana solo si la abrimos nosotros
         if !settingsWasRunning, let close = findCloseButton(of: window) {
             AXUIElementPerformAction(close, "AXPress" as CFString)
         }
@@ -173,29 +329,29 @@ final class StatusController: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - Fallback: escritura directa de la preferencia
+    // MARK: Actions
 
-    private func setNaturalDirect(_ enabled: Bool) {
-        CFPreferencesSetValue(prefKey, enabled as CFPropertyList,
-                              kCFPreferencesAnyApplication,
-                              kCFPreferencesCurrentUser,
-                              kCFPreferencesAnyHost)
-        CFPreferencesSynchronize(kCFPreferencesAnyApplication,
-                                 kCFPreferencesCurrentUser,
-                                 kCFPreferencesAnyHost)
-        for daemon in ["cfprefsd", "hidd"] {
-            let kill = Process()
-            kill.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
-            kill.arguments = [daemon]
-            try? kill.run()
-            kill.waitUntilExit()
+    /// Manual toggle: disables automatic mode and flips the setting.
+    @objc private func toggleManual() {
+        autoMode = false
+        log("Modo manual (natural -> \(!naturalScrollingEnabled() ? "ON" : "OFF"))")
+        requestApply(!naturalScrollingEnabled())
+    }
+
+    @objc private func toggleAuto() {
+        autoMode = !autoMode
+        log("Modo \(autoMode ? "automatico" : "manual")")
+        shownState = nil
+        refresh()
+        if autoMode {
+            requestApply(!(watcher?.mouseConnected ?? false))
         }
     }
 
-    // MARK: - Interfaz
+    // MARK: UI
 
     private func refresh() {
-        let on = naturalEnabled
+        let on = naturalScrollingEnabled()
         if on == shownState { return }
         shownState = on
         guard let button = statusItem.button else { return }
@@ -212,12 +368,22 @@ final class StatusController: NSObject, NSApplicationDelegate {
 
     private func makeMenu(on: Bool) -> NSMenu {
         let menu = NSMenu()
+
+        let auto = NSMenuItem(title: "Automático (según ratón)",
+                              action: #selector(toggleAuto), keyEquivalent: "")
+        auto.target = self
+        auto.state = autoMode ? .on : .off
+        menu.addItem(auto)
+
         let toggle = NSMenuItem(title: on ? "Natural scrolling: activado" : "Natural scrolling: desactivado",
-                                action: #selector(toggle), keyEquivalent: "")
+                                action: #selector(toggleManual), keyEquivalent: "")
         toggle.target = self
         toggle.state = on ? .on : .off
+        toggle.toolTip = "Desactiva el modo automático y alterna manualmente"
         menu.addItem(toggle)
+
         menu.addItem(NSMenuItem.separator())
+
         let quit = NSMenuItem(title: "Salir", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp
         menu.addItem(quit)

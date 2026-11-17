@@ -1,60 +1,84 @@
 # Natural Scroll Toggle
 
-A tiny macOS menu bar app that toggles **Natural Scrolling** with one click.
+A tiny macOS menu bar app that toggles **Natural Scrolling** — manually with
+one click, or automatically depending on whether a mouse is connected.
 
 ![How it works](https://img.shields.io/badge/macOS-12%2B-blue) ![Arch](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-lightgrey) ![License](https://img.shields.io/badge/license-MIT-green)
 
 ## Why
 
-Natural scrolling feels great on a **trackpad** — content follows your fingers.
-But with a **mouse wheel** most people prefer the classic direction (roll the
-wheel down → content goes down). If you constantly switch between trackpad and
-mouse, you end up fighting the scroll direction every time you plug the mouse
-in or out.
+Natural scrolling feels great on a **trackpad** — content follows your
+fingers. But with a **mouse wheel** most people prefer the classic direction
+(roll the wheel down → content goes down). If you constantly switch between
+trackpad and mouse, you end up fighting the scroll direction every time you
+plug the mouse in or out.
 
 This app puts a small icon in the menu bar:
 
 - 🟢 **Green arrows** — Natural scrolling is **on** (trackpad mode)
 - 🔴 **Red arrows** — Natural scrolling is **off** (mouse mode)
 
-Click the icon, then the first menu item, and the setting changes everywhere
-immediately — the same as toggling it yourself in System Settings, without
-digging through panes.
+And it can switch for you: connect a mouse → classic scrolling; unplug it →
+back to natural.
 
-The icon also stays in sync if you change the setting from System Settings,
-and it starts automatically at login.
+## Features
+
+- **Automatic mode (default)**: watches for external mice (USB, Bluetooth,
+  2.4 GHz dongles) and applies the matching scroll direction on every
+  connect/disconnect.
+- **Manual override**: click the state item in the menu to flip the setting
+  yourself; this disables automatic mode until you re-enable it.
+- The icon stays in sync if you change the setting from System Settings, and
+  the app starts automatically at login.
 
 ## How it works (and why it's not just a `defaults write`)
 
 Natural scrolling is stored in the global preference key
-`com.apple.swipescrolldirection`. On modern macOS, **writing that key directly
-does not apply the change to the running system** — new values are only picked
-up by processes that read the preference again, so the scroll direction stays
-the same until apps relaunch (or the session restarts). That's why so many
-"one-liner" solutions for toggling scroll direction feel broken.
+`com.apple.swipescrolldirection`. On modern macOS, **writing that key
+directly does not apply the change to the running system** — new values are
+only picked up by processes that read the preference again, so the scroll
+direction stays the same until apps relaunch (or the session restarts). That's
+why so many "one-liner" solutions for toggling scroll direction feel broken.
 
-This app takes a different approach:
+This app instead **operates the real System Settings switch**:
 
-1. When you toggle, it opens the **Trackpad** pane of System Settings in the
-   background.
-2. It presses the middle tab ("Scroll & Zoom") and then the **Natural
-   scrolling** checkbox through the macOS **Accessibility API** (`AXPress` on
-   the real UI control).
-3. Because it operates the exact same control a human would, the change is
-   applied live system-wide by Apple's own code path.
-4. If anything fails (no Accessibility permission, unexpected UI, …), it falls
-   back to writing the preference directly and restarting `cfprefsd`/`hidd`.
+1. Opens the **Trackpad** pane of System Settings in the background.
+2. Presses the "Scroll & Zoom" tab and then the **Natural scrolling**
+   checkbox through the macOS **Accessibility API** (`AXPress` on the real
+   UI control) — the exact code path a human toggle takes, so the change is
+   applied live system-wide by Apple's own machinery.
+3. If anything fails (no Accessibility permission, unexpected UI, …), it
+   falls back to writing the preference directly and restarting
+   `cfprefsd`/`hidd`.
+
+### Mouse detection (automatic mode)
+
+Mouse presence is detected with `IOHIDManager` (USB, Bluetooth and wireless
+dongles all show up as HID devices). A few quirks are handled:
+
+- The internal trackpad is filtered out (it reports itself as a HID "mouse").
+- Keyboards, audio interfaces and docks often expose a dormant "mouse"
+  interface for boot compatibility. Devices to ignore can be listed in
+  `~/Library/Application Support/natural-scroll-toggle/ignore.txt` (one exact
+  product name per line — detected names are written to the log).
+- A heartbeat re-checks every 3 seconds, because Thunderbolt/USB-C docks can
+  silently drop attach/detach notifications.
+
+Debug log: `~/Library/Logs/natural-scroll-toggle.log`.
 
 The app is written in Swift, uses only public frameworks (AppKit,
-ApplicationServices, CoreFoundation) and has no third-party dependencies.
+ApplicationServices, CoreFoundation, IOKit) and has no third-party
+dependencies.
 
 ## Requirements
 
 - macOS 12 (Monterey) or later
 - Apple Silicon or Intel
-- **Accessibility permission** — macOS asks the first time you toggle (System
-  Settings ▸ Privacy & Security ▸ Accessibility). Without it, the app falls
-  back to the direct (non-live) mode.
+- **Accessibility permission** — macOS asks the first time the app needs to
+  operate the switch (System Settings ▸ Privacy & Security ▸ Accessibility).
+  Without it, the app falls back to the direct (non-live) write. For local
+  development builds, `build.sh` signs with your *Apple Development* identity
+  when available so the permission survives rebuilds.
 
 ## Install
 
@@ -77,8 +101,8 @@ cd natural-scroll-toggle
 ./install.sh
 ```
 
-Both options install the app to `~/Applications` and register a LaunchAgent so
-it starts at login. No administrator rights needed.
+Both options install the app to `~/Applications` and register a LaunchAgent
+so it starts at login. No administrator rights needed.
 
 ## Uninstall
 
@@ -88,16 +112,21 @@ it starts at login. No administrator rights needed.
 
 ## Usage
 
-Click the arrows icon in the menu bar and choose the first item
-(**Natural scrolling: on/off**). The app briefly opens and closes System
-Settings in the background — that's how it flips the real switch. **Salir**
-quits the app.
+Click the arrows icon in the menu bar:
+
+- **Automático (según ratón)** — checkmark enables/disables automatic mode.
+- **Natural scrolling: on/off** — flips the setting now (switches to manual
+  mode if automatic was on).
+
+When the app flips the setting, it briefly opens and closes System Settings
+in the background — that's how it presses the real switch. **Salir** quits
+the app.
 
 ## Repository layout
 
 ```
 Sources/main.swift    the whole app (single file)
-build.sh              builds a universal binary into dist/
+build.sh              builds + signs a universal binary into dist/
 dist/NaturalScrollToggle.app   prebuilt app bundle
 install.sh            installs to ~/Applications + LaunchAgent
 uninstall.sh          removes it again
