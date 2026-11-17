@@ -341,6 +341,9 @@ final class StatusController: NSObject, NSApplicationDelegate {
             if let t = candidates.first(where: { $0.1.contains("Scroll") }) {
                 AXUIElementPerformAction(t.0, "AXPress" as CFString)
                 Thread.sleep(forTimeInterval: 0.5)
+            } else {
+                log("AX: no se encontro la pestana 'Scroll'; volcando arbol AX")
+                dumpWindow(window)
             }
         }
 
@@ -358,6 +361,7 @@ final class StatusController: NSObject, NSApplicationDelegate {
         }
         guard let checkbox = target else {
             log("AX: no aparecio checkbox 'Natural scrolling'. ultimas etiquetas=\(lastLabels.joined(separator: " | "))")
+            dumpWindow(window)
             return false
         }
         log("AX: objetivo='Natural scrolling' valor-antes=\(checkboxValue(checkbox) ?? "?")")
@@ -387,6 +391,41 @@ final class StatusController: NSObject, NSApplicationDelegate {
               let obj = ref else { return nil }
         let labelEl = obj as! AXUIElement  // AXTitleUIElement always returns an AXUIElement
         return axString(labelEl, "AXValue")
+    }
+
+    /// Diagnostic: dump the window's AX tree (role | label | pressable |
+    /// value) to the log, so an unfamiliar macOS layout can be analyzed
+    /// from a user's log without extra tools.
+    private func dumpWindow(_ window: AXUIElement, limit: Int = 200) {
+        log("AXDUMP: begin")
+        var queue: [AXUIElement] = [window]
+        var visited = 0
+        var lines = 0
+        while !queue.isEmpty && visited < 4000 && lines < limit {
+            let el = queue.removeFirst()
+            visited += 1
+            let role = axString(el, "AXRole") ?? "?"
+            if role == "AXGroup" || role == "AXLayoutItem" || role == "AXUnknown" {
+                // skip noisy containers but still descend
+            } else {
+                let label = elementLabel(el) ?? axString(el, "AXTitle") ?? axString(el, "AXDescription") ?? ""
+                var actsRef: CFTypeRef?
+                var press = false
+                if AXUIElementCopyAttributeValue(el, "AXActions" as CFString, &actsRef) == .success,
+                   let actions = actsRef as? [String] {
+                    press = actions.contains("AXPress")
+                }
+                let value = checkboxValue(el) ?? ""
+                log("AXDUMP: \(role) | \(label) | press=\(press ? 1 : 0) | val=\(value)")
+                lines += 1
+            }
+            var childrenRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(el, "AXChildren" as CFString, &childrenRef) == .success,
+               let children = childrenRef as? [AXUIElement] {
+                queue.append(contentsOf: children)
+            }
+        }
+        log("AXDUMP: end (lines=\(lines))")
     }
 
     private func pressableElements(_ window: AXUIElement) -> [(AXUIElement, String)] {
