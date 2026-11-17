@@ -82,6 +82,17 @@ dependencies.
 
 ## Install
 
+### DMG (easiest)
+
+Download `NaturalScrollToggle.dmg` from
+[Releases](https://github.com/juanwilde/natural-scroll-toggle/releases),
+open it, and double-click **Install.command**. It copies the app to
+`~/Applications`, sets it to start at login, and launches it — no admin
+rights needed. Since the app is ad-hoc signed, macOS may show an
+"unidentified developer" warning: allow it in System Settings ▸ Privacy &
+Security (or right-click ▸ Open). The installer also asks for the
+**Accessibility** permission the first time — see above.
+
 ### From a release tarball
 
 Download the latest `natural-scroll-toggle-*.tar.gz` from
