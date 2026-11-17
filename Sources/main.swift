@@ -218,7 +218,11 @@ final class StatusController: NSObject, NSApplicationDelegate {
         let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         let options: CFDictionary? = prompt ? [promptKey: true] as CFDictionary : nil
         guard AXIsProcessTrustedWithOptions(options) else {
-            if prompt { DispatchQueue.main.async { self.showAccessibilityHelp() } }
+            if prompt {
+                DispatchQueue.main.async { self.showAccessibilityHelp() }
+            } else {
+                self.notifyMissingAccessibilityOnce()
+            }
             return false
         }
 
@@ -315,6 +319,16 @@ final class StatusController: NSObject, NSApplicationDelegate {
             var ref: CFTypeRef?
             AXUIElementCopyAttributeValue(el, "AXSubrole" as CFString, &ref)
             return ref as? String == "AXCloseButton"
+        }
+    }
+
+    private var accessibilityAlertShown = false
+
+    private func notifyMissingAccessibilityOnce() {
+        DispatchQueue.main.async {
+            guard !self.accessibilityAlertShown else { return }
+            self.accessibilityAlertShown = true
+            self.showAccessibilityHelp()
         }
     }
 
