@@ -174,6 +174,11 @@ final class StatusController: NSObject, NSApplicationDelegate {
         }
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         log("Iniciado v\(version) pid=\(ProcessInfo.processInfo.processIdentifier) (modo \(autoMode ? "automatico" : "manual"))")
+        let osMajor = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        if osMajor < 26 {
+            log("ADVERTENCIA: macOS \(ProcessInfo.processInfo.operatingSystemVersion.majorVersion).\(ProcessInfo.processInfo.operatingSystemVersion.minorVersion) no soportado; se requiere macOS 26 o posterior")
+            DispatchQueue.main.async { self.showVersionWarning() }
+        }
         if let button = statusItem.button {
             log("Icono: frame=\(button.frame) imagen=\(button.image != nil ? "ok" : "ausente")")
         } else {
@@ -322,9 +327,11 @@ final class StatusController: NSObject, NSApplicationDelegate {
 
         Thread.sleep(forTimeInterval: 0.5)
 
-        // Select the "Scroll & Zoom" tab. macOS 26 exposes a tab group of
-        // AXRadioButton; macOS 27 changed the control type, so if there are
-        // no radios, look for any pressable element labeled "Scroll".
+        // Select the "Scroll & Zoom" tab.
+        // macOS 26: tab group of 3 AXRadioButton (middle one).
+        // macOS 27: the tabs are labeled checkboxes ("Point & Click",
+        // "Scroll & Zoom", "More Gestures"); AXActions may not list AXPress,
+        // so press by label without consulting the actions attribute.
         let radios = findAll(window, role: "AXRadioButton")
         if !radios.isEmpty {
             let radioLabels = radios.map { elementLabel($0) ?? axString($0, "AXTitle") ?? "?" }
@@ -335,29 +342,45 @@ final class StatusController: NSObject, NSApplicationDelegate {
                 AXUIElementPerformAction(r, "AXPress" as CFString)
                 Thread.sleep(forTimeInterval: 0.4)
             }
-        } else {
-            let candidates = pressableElements(window)
-            log("AX: radios=0; pulsables=\(candidates.map { $0.1 }.filter { !$0.isEmpty }.joined(separator: " | "))")
-            if let t = candidates.first(where: { $0.1.contains("Scroll") }) {
-                AXUIElementPerformAction(t.0, "AXPress" as CFString)
-                Thread.sleep(forTimeInterval: 0.5)
-            } else {
-                log("AX: no se encontro la pestana 'Scroll'; volcando arbol AX")
-                dumpWindow(window)
-            }
         }
 
-        // Wait for the checkbox labeled "Natural scrolling" to appear (the
-        // pane loads asynchronously; other panes may have other boxes).
+        func pressScrollTab() -> Bool {
+            let labeled = findAll(window, role: "AXCheckBox")
+                + findAll(window, role: "AXButton")
+                + findAll(window, role: "AXStaticText")
+            if let t = labeled.first(where: {
+                let l = elementLabel($0) ?? axString($0, "AXTitle") ?? ""
+                return l == "Scroll & Zoom"
+            }) {
+                AXUIElementPerformAction(t, "AXPress" as CFString)
+                return true
+            }
+            return false
+        }
+
+        // Wait for the checkbox labeled "Natural scrolling" (the pane loads
+        // asynchronously). If the tab press did not take effect, retry it.
         var target: AXUIElement?
-        let deadline = Date().addingTimeInterval(8)
+        let deadline = Date().addingTimeInterval(10)
         var lastLabels: [String] = []
+        var radiosHandledTab = !radios.isEmpty
+        var presses = 0
+        var lastPress = Date.distantPast
         while Date() < deadline && target == nil {
             let boxes = findAll(window, role: "AXCheckBox")
             lastLabels = boxes.map { elementLabel($0) ?? axString($0, "AXTitle") ?? "?" }
             target = boxes.first(where: { elementLabel($0) == "Natural scrolling" })
                 ?? boxes.first(where: { elementLabel($0)?.lowercased().contains("natural") == true })
-            if target == nil { Thread.sleep(forTimeInterval: 0.25) }
+            if target == nil {
+                let canRetry = !radiosHandledTab || (Date().timeIntervalSince(lastPress) > 2.5 && presses < 3)
+                if canRetry && pressScrollTab() {
+                    if radiosHandledTab { presses += 1 }
+                    radiosHandledTab = true
+                    lastPress = Date()
+                    log("AX: pestana 'Scroll & Zoom' pulsada (intento \(presses + 1))")
+                }
+                Thread.sleep(forTimeInterval: 0.25)
+            }
         }
         guard let checkbox = target else {
             log("AX: no aparecio checkbox 'Natural scrolling'. ultimas etiquetas=\(lastLabels.joined(separator: " | "))")
@@ -428,21 +451,6 @@ final class StatusController: NSObject, NSApplicationDelegate {
         log("AXDUMP: end (lines=\(lines))")
     }
 
-    private func pressableElements(_ window: AXUIElement) -> [(AXUIElement, String)] {
-        var out: [(AXUIElement, String)] = []
-        let roles = ["AXButton", "AXStaticText", "AXCell", "AXCheckBox"]
-        for role in roles {
-            for el in findAll(window, role: role) {
-                var actsRef: CFTypeRef?
-                guard AXUIElementCopyAttributeValue(el, "AXActions" as CFString, &actsRef) == .success,
-                      let actions = actsRef as? [String], actions.contains("AXPress") else { continue }
-                let l = elementLabel(el) ?? axString(el, "AXTitle") ?? axString(el, "AXDescription") ?? ""
-                out.append((el, l))
-            }
-        }
-        return out
-    }
-
     private func checkboxValue(_ cb: AXUIElement) -> String? {
         axString(cb, "AXValue")
     }
@@ -507,6 +515,14 @@ final class StatusController: NSObject, NSApplicationDelegate {
             self.accessibilityAlertShown = true
             self.showAccessibilityHelp()
         }
+    }
+
+    private func showVersionWarning() {
+        let alert = NSAlert()
+        alert.messageText = "Versión de macOS no soportada"
+        alert.informativeText = "Natural Scroll Toggle requiere macOS 26 o posterior. Este Mac tiene macOS \(ProcessInfo.processInfo.operatingSystemVersion.majorVersion).\(ProcessInfo.processInfo.operatingSystemVersion.minorVersion); la app no funcionará correctamente."
+        alert.addButton(withTitle: "Aceptar")
+        alert.runModal()
     }
 
     private func showAccessibilityHelp() {

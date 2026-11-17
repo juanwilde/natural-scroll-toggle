@@ -88,5 +88,11 @@ else
     echo "WARNING: could not determine console user; LaunchAgent not registered"
 fi
 
+# Warn on unsupported macOS versions (< 26)
+OS_MAJOR=$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)
+if [ "${OS_MAJOR:-0}" -lt 26 ] && [ -n "$CONSOLE_UID" ]; then
+    launchctl asuser "$CONSOLE_UID" osascript -e "display dialog \"Natural Scroll Toggle requires macOS 26 or later. This Mac has macOS $(sw_vers -productVersion); the app will not work correctly.\" buttons {\"OK\"} default button 1 with icon caution with title \"Natural Scroll Toggle\"" 2>/dev/null || true
+fi
+
 echo "postinstall done"
 exit 0

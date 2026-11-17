@@ -3,7 +3,12 @@
 A tiny macOS menu bar app that toggles **Natural Scrolling** — manually with
 one click, or automatically depending on whether a mouse is connected.
 
-![How it works](https://img.shields.io/badge/macOS-12%2B-blue) ![Arch](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-lightgrey) ![License](https://img.shields.io/badge/license-MIT-green)
+![macOS](https://img.shields.io/badge/macOS-26%20%7C%2027-blue) ![Arch](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-lightgrey) ![License](https://img.shields.io/badge/license-MIT-green)
+
+> **Requires macOS 26 or later.** Older versions are not supported: the app
+> operates the real System Settings switch via the Accessibility API, and
+> the Trackpad pane structure differs in earlier macOS releases. The
+> installer and the app itself warn if run on an unsupported version.
 
 ## Why
 
@@ -72,7 +77,8 @@ dependencies.
 
 ## Requirements
 
-- macOS 12 (Monterey) or later
+- **macOS 26 or 27** (the installer and the app warn on older versions and
+  won't work correctly there)
 - Apple Silicon or Intel
 - **Accessibility permission** — macOS asks the first time the app needs to
   operate the switch (System Settings ▸ Privacy & Security ▸ Accessibility).
