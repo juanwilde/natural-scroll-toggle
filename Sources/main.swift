@@ -353,8 +353,16 @@ final class StatusController: NSObject, NSApplicationDelegate {
     /// Manual toggle: disables automatic mode and flips the setting.
     @objc private func toggleManual() {
         autoMode = false
-        log("Modo manual (natural -> \(!naturalScrollingEnabled() ? "ON" : "OFF"))")
-        requestApply(!naturalScrollingEnabled())
+        let desired = !naturalScrollingEnabled()
+        log("Modo manual (natural -> \(desired ? "ON" : "OFF"))")
+        // Si falta el permiso, pedirlo interactivamente: asi salta el
+        // dialogo del sistema que lleva directo a Ajustes.
+        if !AXIsProcessTrustedWithOptions(nil) {
+            let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+            _ = AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary)
+            showAccessibilityHelp()
+        }
+        requestApply(desired)
     }
 
     @objc private func toggleAuto() {
