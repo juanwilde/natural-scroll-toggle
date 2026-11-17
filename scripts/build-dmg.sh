@@ -5,7 +5,7 @@ set -e
 
 cd "$(dirname "$0")/.."
 
-APP="dist/NaturalScrollToggle.app"
+APP="${APP_PATH:-dist/NaturalScrollToggle.app}"
 [ -d "$APP" ] || { echo "Run ./build.sh first." >&2; exit 1; }
 
 STAGE=$(mktemp -d)

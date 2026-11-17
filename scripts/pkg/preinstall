@@ -1,0 +1,32 @@
+#!/bin/bash
+# Pre-install for NaturalScrollToggle.pkg (runs as root).
+# Removes every previous copy of the app so the payload always lands in
+# /Applications. Without this, Installer "relocates" the bundle: if another
+# copy with the same bundle id exists anywhere (~/Applications, a repo
+# checkout...), the payload is installed THERE instead and /Applications
+# never receives the app.
+LOG=/tmp/nst-preinstall.log
+exec >>"$LOG" 2>&1
+set -x
+
+BUNDLE_ID="com.wilde.naturalscrolltoggle"
+
+killall NaturalScrollToggle 2>/dev/null || true
+launchctl unload /Library/LaunchAgents/com.wilde.naturalscrolltoggle.plist 2>/dev/null || true
+
+# All copies Spotlight knows about
+for p in $(mdfind "kMDItemCFBundleIdentifier == '$BUNDLE_ID'" 2>/dev/null); do
+    echo "Removing previous copy: $p"
+    rm -rf "$p" 2>/dev/null || true
+done
+
+# Fallback for the usual locations (Spotlight may be disabled)
+rm -rf /Applications/NaturalScrollToggle.app 2>/dev/null || true
+for d in /Users/*; do
+    [ -d "$d" ] || continue
+    rm -rf "$d/Applications/NaturalScrollToggle.app" 2>/dev/null || true
+    rm -rf "$d/projects/natural-scroll-toggle/dist/NaturalScrollToggle.app" 2>/dev/null || true
+done
+
+echo "preinstall done"
+exit 0
