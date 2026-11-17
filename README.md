@@ -110,6 +110,26 @@ so it starts at login. No administrator rights needed.
 ./uninstall.sh
 ```
 
+## Updating
+
+Download the latest release tarball, extract it, and run `./install.sh`
+again — it replaces the app and the LaunchAgent in place. Your settings
+(automatic/manual mode) are preserved.
+
+After an update, macOS may ask you to re-approve the **Accessibility**
+permission if the app's code signature changed (System Settings ▸ Privacy &
+Security ▸ Accessibility).
+
+If that Mac still has the old standalone auto-switcher
+(`mouse-scroll-autoswitch`, an earlier experiment), remove it first so only
+one thing changes the setting:
+
+```sh
+launchctl unload ~/Library/LaunchAgents/com.wilde.mouse-scroll-autoswitch.plist
+rm ~/Library/LaunchAgents/com.wilde.mouse-scroll-autoswitch.plist
+rm -rf ~/Library/"Application Support"/mouse-scroll-autoswitch
+```
+
 ## Usage
 
 Click the arrows icon in the menu bar:
