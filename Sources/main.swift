@@ -151,6 +151,7 @@ final class StatusController: NSObject, NSApplicationDelegate {
     private var shownState: Bool?
     private var applyBusy = false
     private var pendingDesired: Bool?
+    private var settingsWindow: AXUIElement?
 
     private var autoMode: Bool {
         get { defaults.object(forKey: "autoMode") as? Bool ?? true }
@@ -160,7 +161,11 @@ final class StatusController: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         createStatusItem()
         watcher = MouseWatcher { [weak self] connected in
-            guard let self, self.autoMode else { return }
+            guard let self else { return }
+            if !self.autoMode {
+                log("Transicion ignorada (modo manual): raton \(connected ? "conectado" : "desconectado")")
+                return
+            }
             self.requestApply(!connected)
         }
         refresh()
@@ -182,6 +187,13 @@ final class StatusController: NSObject, NSApplicationDelegate {
             log("Accesibilidad: sin permiso; solicitandolo")
             let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
             _ = AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary)
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // Close the System Settings window we kept open for reuse.
+        if let window = settingsWindow, let close = findCloseButton(of: window) {
+            AXUIElementPerformAction(close, "AXPress" as CFString)
         }
     }
 
@@ -237,6 +249,10 @@ final class StatusController: NSObject, NSApplicationDelegate {
 
     /// Flips the real System Settings switch via the Accessibility API.
     /// Returns true if the preference value actually changed.
+    ///
+    /// The System Settings window is opened once (in the background) and
+    /// kept open for reuse, so toggling does not flash a new window every
+    /// time. It is closed when this app quits (applicationWillTerminate).
     private func toggleViaSettingsUI(from current: Bool, prompt: Bool) -> Bool {
         let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         let options: CFDictionary? = prompt ? [promptKey: true] as CFDictionary : nil
@@ -249,32 +265,47 @@ final class StatusController: NSObject, NSApplicationDelegate {
             return false
         }
 
-        let settingsWasRunning = NSRunningApplication
+        // Make sure System Settings is running; open it in the background if not.
+        var app = NSRunningApplication
             .runningApplications(withBundleIdentifier: settingsBundleID)
-            .contains { !$0.isTerminated }
-
-        let semaphore = DispatchSemaphore(value: 0)
-        var openedApp: NSRunningApplication?
-        let config = NSWorkspace.OpenConfiguration()
-        config.activates = false
-        NSWorkspace.shared.open(trackpadPaneURL, configuration: config) { app, _ in
-            openedApp = app
-            semaphore.signal()
+            .first
+        if app == nil {
+            let semaphore = DispatchSemaphore(value: 0)
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = false
+            NSWorkspace.shared.open(trackpadPaneURL, configuration: config) { opened, _ in
+                app = opened
+                semaphore.signal()
+            }
+            _ = semaphore.wait(timeout: .now() + 10)
         }
-        _ = semaphore.wait(timeout: .now() + 10)
-
-        guard let app = openedApp ??
-                NSRunningApplication.runningApplications(withBundleIdentifier: settingsBundleID).first
-        else { return false }
+        guard let app else { return false }
 
         let appEl = AXUIElementCreateApplication(app.processIdentifier)
-        guard let window = waitForWindow(appEl, timeout: 10) else { return false }
 
-        // "Scroll & Zoom" tab: middle radio button of the pane's tab group
+        // Reuse the existing window when possible; only open one if needed.
+        var windowsRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(appEl, "AXWindows" as CFString, &windowsRef)
+        var window = (windowsRef as? [AXUIElement])?.first
+        if window == nil {
+            window = waitForWindow(appEl, timeout: 10)
+            if window != nil {
+                log("Ventana de Ajustes abierta; se mantiene en segundo plano para reutilizar")
+            }
+        } else {
+            log("Ventana de Ajustes reutilizada")
+        }
+        guard let window else { return false }
+
+        // "Scroll & Zoom" tab: middle radio button; press only if not active
         guard let radios = waitForElements(in: window, role: "AXRadioButton", minCount: 3, timeout: 8),
               radios.count >= 3 else { return false }
-        AXUIElementPerformAction(radios[1], "AXPress" as CFString)
-        Thread.sleep(forTimeInterval: 0.5)
+        var selectedRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(radios[1], "AXValue" as CFString, &selectedRef)
+        if (selectedRef as? String) != "1" {
+            AXUIElementPerformAction(radios[1], "AXPress" as CFString)
+            Thread.sleep(forTimeInterval: 0.3)
+        }
 
         // First checkbox in the pane content = "Natural scrolling"
         guard let boxes = waitForElements(in: window, role: "AXCheckBox", minCount: 1, timeout: 8),
@@ -287,9 +318,8 @@ final class StatusController: NSObject, NSApplicationDelegate {
             changed = naturalScrollingEnabled() != current
         }
 
-        if !settingsWasRunning, let close = findCloseButton(of: window) {
-            AXUIElementPerformAction(close, "AXPress" as CFString)
-        }
+        // Keep the window for reuse; close it when this app quits.
+        settingsWindow = window
         return changed
     }
 
