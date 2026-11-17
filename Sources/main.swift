@@ -298,19 +298,29 @@ final class StatusController: NSObject, NSApplicationDelegate {
 
         let appEl = AXUIElementCreateApplication(app.processIdentifier)
 
-        // Reuse the existing window when possible; only open one if needed.
+        // Always (re)open the Trackpad pane: with an existing window this
+        // navigates it (e.g. away from Privacy > Accessibility, where macOS
+        // leaves the window after granting the permission), it does not
+        // create a new window.
+        let openSemaphore = DispatchSemaphore(value: 0)
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = false
+        NSWorkspace.shared.open(trackpadPaneURL, configuration: config) { _, _ in
+            openSemaphore.signal()
+        }
+        _ = openSemaphore.wait(timeout: .now() + 10)
+
         var windowsRef: CFTypeRef?
         AXUIElementCopyAttributeValue(appEl, "AXWindows" as CFString, &windowsRef)
         var window = (windowsRef as? [AXUIElement])?.first
         if window == nil {
             window = waitForWindow(appEl, timeout: 10)
-            if window != nil {
-                log("Ventana de Ajustes abierta; se mantiene en segundo plano para reutilizar")
-            }
-        } else {
-            log("Ventana de Ajustes reutilizada")
         }
         guard let window else { return false }
+        settingsWindow = window
+        log("Ventana de Ajustes: titulo='\(axString(window, "AXTitle") ?? "?")' (reutilizada/navigated)")
+
+        Thread.sleep(forTimeInterval: 0.5)
 
         // Select the "Scroll & Zoom" tab if a tab group exists (identify the
         // radio by its label; tolerate structural changes in newer macOS).
@@ -326,20 +336,23 @@ final class StatusController: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Press ONLY the checkbox labeled exactly "Natural scrolling".
-        guard let boxes = waitForElements(in: window, role: "AXCheckBox", minCount: 1, timeout: 8),
-              !boxes.isEmpty else {
-            log("AX: no se encontraron checkboxes en la ventana")
+        // Wait for the checkbox labeled exactly "Natural scrolling" to appear
+        // (the pane loads asynchronously; other panes may have other boxes).
+        var target: AXUIElement?
+        let deadline = Date().addingTimeInterval(8)
+        var lastLabels: [String] = []
+        while Date() < deadline && target == nil {
+            let boxes = findAll(window, role: "AXCheckBox")
+            lastLabels = boxes.map { elementLabel($0) ?? "?" }
+            target = boxes.first(where: { elementLabel($0) == "Natural scrolling" })
+            if target == nil { Thread.sleep(forTimeInterval: 0.25) }
+        }
+        guard let checkbox = target else {
+            log("AX: no aparecio checkbox 'Natural scrolling'. ultimas etiquetas=\(lastLabels.joined(separator: " | "))")
             return false
         }
-        let labels = boxes.map { elementLabel($0) ?? "?" }
-        log("AX: checkboxes=\(boxes.count) etiquetas=\(labels.joined(separator: " | "))")
-        guard let target = boxes.first(where: { elementLabel($0) == "Natural scrolling" }) else {
-            log("AX: no hay checkbox 'Natural scrolling'; no se pulsa nada (fallback seguro)")
-            return false
-        }
-        log("AX: objetivo='Natural scrolling' valor-antes=\(checkboxValue(target) ?? "?")")
-        AXUIElementPerformAction(target, "AXPress" as CFString)
+        log("AX: objetivo='Natural scrolling' valor-antes=\(checkboxValue(checkbox) ?? "?")")
+        AXUIElementPerformAction(checkbox, "AXPress" as CFString)
 
         var changed = false
         for _ in 0..<30 where !changed {
