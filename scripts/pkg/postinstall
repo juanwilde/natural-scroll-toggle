@@ -1,7 +1,10 @@
 #!/bin/bash
-# Post-install script for NaturalScrollToggle.pkg
-# Runs as root: fixes permissions/quarantine on the app and registers the
-# LaunchAgent for the console user so the app starts at that user's login.
+# Post-install script for NaturalScrollToggle.pkg (runs as root).
+# Installer may place the app outside /Applications ("bundle relocation"
+# when another copy with the same bundle id exists elsewhere). Locate the
+# freshly installed bundle, normalize its location to /Applications,
+# remove any other stale copies, and register the LaunchAgent for the
+# console user.
 LOG=/tmp/nst-postinstall.log
 exec >>"$LOG" 2>&1
 set -x
@@ -9,21 +12,41 @@ set -x
 APP="/Applications/NaturalScrollToggle.app"
 BUNDLE_ID="com.wilde.naturalscrolltoggle"
 
-# The payload should be in /Applications (preinstall removed other copies).
-# If it was still relocated, find the freshest copy and move it back.
-if [ ! -d "$APP" ]; then
-    FOUND=$(mdfind "kMDItemCFBundleIdentifier == '$BUNDLE_ID'" 2>/dev/null | head -1)
-    if [ -n "$FOUND" ] && [ -d "$FOUND" ]; then
-        rm -rf "$APP"
-        mv "$FOUND" "$APP"
-        echo "Normalized app location: $FOUND -> $APP"
-    fi
-fi
+# Locate the newest copy (the payload we just installed). Spotlight may lag
+# a few seconds behind a freshly created bundle, so retry briefly.
+NEWEST=""
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    NEWEST=$(mdfind "kMDItemCFBundleIdentifier == '$BUNDLE_ID'" 2>/dev/null \
+        | while read -r p; do [ -d "$p" ] && stat -f '%m %N' "$p"; done \
+        | sort -rn | head -1 | cut -d' ' -f2-)
+    [ -n "$NEWEST" ] && break
+    [ -d "$APP" ] && { NEWEST="$APP"; break; }
+    sleep 1.5
+done
 
-if [ ! -d "$APP" ]; then
-    echo "ERROR: $APP not found after payload install"
+if [ -z "$NEWEST" ]; then
+    echo "ERROR: no copy of the app found after payload install"
     exit 1
 fi
+
+# Normalize to /Applications
+if [ "$NEWEST" != "$APP" ]; then
+    rm -rf "$APP"
+    mv "$NEWEST" "$APP"
+    echo "Moved app from $NEWEST to $APP"
+fi
+
+# Remove any remaining stale copies
+for p in $(mdfind "kMDItemCFBundleIdentifier == '$BUNDLE_ID'" 2>/dev/null); do
+    if [ "$p" != "$APP" ] && [ -d "$p" ]; then
+        echo "Removing stale copy: $p"
+        rm -rf "$p"
+    fi
+done
+rm -rf "$HOME/Applications/NaturalScrollToggle.app" 2>/dev/null || true
+for d in /Users/*; do
+    [ -d "$d/Applications/NaturalScrollToggle.app" ] && rm -rf "$d/Applications/NaturalScrollToggle.app"
+done
 
 BIN="$APP/Contents/MacOS/NaturalScrollToggle"
 chmod +x "$BIN"
@@ -67,4 +90,3 @@ fi
 
 echo "postinstall done"
 exit 0
-
