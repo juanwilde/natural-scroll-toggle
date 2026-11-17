@@ -359,7 +359,7 @@ final class StatusController: NSObject, NSApplicationDelegate {
             Thread.sleep(forTimeInterval: 0.1)
             changed = naturalScrollingEnabled() != current
         }
-        log("AX: valor-despues=\(checkboxValue(target) ?? "?") cambiada=\(changed)")
+        log("AX: valor-despues=\(checkboxValue(checkbox) ?? "?") cambiada=\(changed)")
 
         // Keep the window for reuse; close it when this app quits.
         settingsWindow = window
