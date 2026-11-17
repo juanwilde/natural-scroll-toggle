@@ -345,15 +345,19 @@ final class StatusController: NSObject, NSApplicationDelegate {
         }
 
         func pressScrollTab() -> Bool {
-            let labeled = findAll(window, role: "AXCheckBox")
+            let candidates = findAll(window, role: "AXCheckBox")
                 + findAll(window, role: "AXButton")
                 + findAll(window, role: "AXStaticText")
-            if let t = labeled.first(where: {
-                let l = elementLabel($0) ?? axString($0, "AXTitle") ?? ""
-                return l == "Scroll & Zoom"
-            }) {
-                AXUIElementPerformAction(t, "AXPress" as CFString)
-                return true
+                + findAll(window, role: "AXCell")
+            for el in candidates {
+                let l = elementLabel(el) ?? axString(el, "AXTitle") ?? axString(el, "AXDescription") ?? ""
+                let lower = l.lowercased()
+                if lower.contains("scroll"), lower.contains("zoom") {
+                    AXUIElementPerformAction(el, "AXPress" as CFString)
+                    AXUIElementSetAttributeValue(el, "AXValue" as CFString, kCFBooleanTrue)
+                    log("AX: pestana pulsada etiqueta='\(l)'")
+                    return true
+                }
             }
             return false
         }
@@ -377,7 +381,6 @@ final class StatusController: NSObject, NSApplicationDelegate {
                     if radiosHandledTab { presses += 1 }
                     radiosHandledTab = true
                     lastPress = Date()
-                    log("AX: pestana 'Scroll & Zoom' pulsada (intento \(presses + 1))")
                 }
                 Thread.sleep(forTimeInterval: 0.25)
             }
