@@ -16,9 +16,12 @@ lipo -create /tmp/nst-arm64 /tmp/nst-x86_64 \
     -o dist/NaturalScrollToggle.app/Contents/MacOS/NaturalScrollToggle
 rm /tmp/nst-arm64 /tmp/nst-x86_64
 chmod +x dist/NaturalScrollToggle.app/Contents/MacOS/NaturalScrollToggle
-# Firma: usa la identidad "Apple Development" si existe (los permisos de
-# Accesibilidad sobreviven entre compilaciones); si no, firma ad-hoc.
-IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development/ {print $2; exit}')
+# Firma: ad-hoc por defecto (sin cuenta de desarrollador asociada: en otros
+# Macs no pide iniciar sesion). Para desarrollo local puedes firmar con tu
+# identidad Apple Development para que el permiso de Accesibilidad
+# sobreviva entre compilaciones:
+#   CODESIGN_IDENTITY="Apple Development: tu@email.com" ./build.sh
+IDENTITY="${CODESIGN_IDENTITY:-}"
 if [ -n "$IDENTITY" ]; then
     codesign --sign "$IDENTITY" --force dist/NaturalScrollToggle.app
 else
