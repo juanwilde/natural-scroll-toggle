@@ -322,29 +322,38 @@ final class StatusController: NSObject, NSApplicationDelegate {
 
         Thread.sleep(forTimeInterval: 0.5)
 
-        // Select the "Scroll & Zoom" tab if a tab group exists (identify the
-        // radio by its label; tolerate structural changes in newer macOS).
+        // Select the "Scroll & Zoom" tab. macOS 26 exposes a tab group of
+        // AXRadioButton; macOS 27 changed the control type, so if there are
+        // no radios, look for any pressable element labeled "Scroll".
         let radios = findAll(window, role: "AXRadioButton")
         if !radios.isEmpty {
-            let radioLabels = radios.map { elementLabel($0) ?? "?" }
+            let radioLabels = radios.map { elementLabel($0) ?? axString($0, "AXTitle") ?? "?" }
             log("AX: radios=\(radios.count) etiquetas=\(radioLabels.joined(separator: " | "))")
-            let targetRadio = zip(radios, radioLabels).first { $1.contains("Scroll") }?.0
+            let targetRadio = zip(radios, radioLabels).first { $0.1.contains("Scroll") }?.0
                 ?? (radios.count >= 3 ? radios[1] : nil)
             if let r = targetRadio, checkboxValue(r) != "1" {
                 AXUIElementPerformAction(r, "AXPress" as CFString)
                 Thread.sleep(forTimeInterval: 0.4)
             }
+        } else {
+            let candidates = pressableElements(window)
+            log("AX: radios=0; pulsables=\(candidates.map { $0.1 }.filter { !$0.isEmpty }.joined(separator: " | "))")
+            if let t = candidates.first(where: { $0.1.contains("Scroll") }) {
+                AXUIElementPerformAction(t.0, "AXPress" as CFString)
+                Thread.sleep(forTimeInterval: 0.5)
+            }
         }
 
-        // Wait for the checkbox labeled exactly "Natural scrolling" to appear
-        // (the pane loads asynchronously; other panes may have other boxes).
+        // Wait for the checkbox labeled "Natural scrolling" to appear (the
+        // pane loads asynchronously; other panes may have other boxes).
         var target: AXUIElement?
         let deadline = Date().addingTimeInterval(8)
         var lastLabels: [String] = []
         while Date() < deadline && target == nil {
             let boxes = findAll(window, role: "AXCheckBox")
-            lastLabels = boxes.map { elementLabel($0) ?? "?" }
+            lastLabels = boxes.map { elementLabel($0) ?? axString($0, "AXTitle") ?? "?" }
             target = boxes.first(where: { elementLabel($0) == "Natural scrolling" })
+                ?? boxes.first(where: { elementLabel($0)?.lowercased().contains("natural") == true })
             if target == nil { Thread.sleep(forTimeInterval: 0.25) }
         }
         guard let checkbox = target else {
@@ -378,6 +387,21 @@ final class StatusController: NSObject, NSApplicationDelegate {
               let obj = ref else { return nil }
         let labelEl = obj as! AXUIElement  // AXTitleUIElement always returns an AXUIElement
         return axString(labelEl, "AXValue")
+    }
+
+    private func pressableElements(_ window: AXUIElement) -> [(AXUIElement, String)] {
+        var out: [(AXUIElement, String)] = []
+        let roles = ["AXButton", "AXStaticText", "AXCell", "AXCheckBox"]
+        for role in roles {
+            for el in findAll(window, role: role) {
+                var actsRef: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(el, "AXActions" as CFString, &actsRef) == .success,
+                      let actions = actsRef as? [String], actions.contains("AXPress") else { continue }
+                let l = elementLabel(el) ?? axString(el, "AXTitle") ?? axString(el, "AXDescription") ?? ""
+                out.append((el, l))
+            }
+        }
+        return out
     }
 
     private func checkboxValue(_ cb: AXUIElement) -> String? {
