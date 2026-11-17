@@ -41,7 +41,10 @@ cat > "$LAUNCH_AGENTS/$PLIST_NAME" <<EOF
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
 </dict>
 </plist>
 EOF
