@@ -270,9 +270,9 @@ final class StatusController: NSObject, NSApplicationDelegate {
     /// Flips the real System Settings switch via the Accessibility API.
     /// Returns true if the preference value actually changed.
     ///
-    /// The System Settings window is opened once (in the background) and
-    /// kept open for reuse, so toggling does not flash a new window every
-    /// time. It is closed when this app quits (applicationWillTerminate).
+    /// The System Settings window is opened in the background, navigated to
+    /// the Trackpad pane and closed again after the toggle, so it never
+    /// lingers on screen.
     private func toggleViaSettingsUI(from current: Bool, prompt: Bool) -> Bool {
         let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         let options: CFDictionary? = prompt ? [promptKey: true] as CFDictionary : nil
@@ -408,8 +408,12 @@ final class StatusController: NSObject, NSApplicationDelegate {
         }
         log("AX: valor-despues=\(checkboxValue(checkbox) ?? "?") cambiada=\(changed)")
 
-        // Keep the window for reuse; close it when this app quits.
-        settingsWindow = window
+        // Close the Settings window after toggling so it never lingers.
+        // (It reopens in the background on the next toggle.)
+        if let close = findCloseButton(of: window) {
+            AXUIElementPerformAction(close, "AXPress" as CFString)
+        }
+        settingsWindow = nil
         return changed
     }
 
