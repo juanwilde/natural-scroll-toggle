@@ -325,6 +325,13 @@ final class StatusController: NSObject, NSApplicationDelegate {
         settingsWindow = window
         log("Ventana de Ajustes: titulo='\(axString(window, "AXTitle") ?? "?")' (reutilizada/navigated)")
 
+        // Move the window off-screen so the toggle is never visible. AX
+        // actions keep working on off-screen windows (unlike hidden apps).
+        // The original position is restored before closing.
+        let originalPosition = axPoint(window, "AXPosition")
+        setWindowPosition(window, CGPoint(x: -2500, y: 100))
+        Thread.sleep(forTimeInterval: 0.2)
+
         Thread.sleep(forTimeInterval: 0.5)
 
         // Select the "Scroll & Zoom" tab.
@@ -357,7 +364,9 @@ final class StatusController: NSObject, NSApplicationDelegate {
                 tabPressAttempts += 1
                 log("AX: pestana etiqueta='\(l)' intento=\(tabPressAttempts)")
                 if tabPressAttempts == 2, let p = axPoint(el, "AXPosition"), let s = axSize(el, "AXSize") {
-                    // AXPress did not switch the pane: click the tab directly
+                    // AXPress did not switch the pane: bring the window back
+                    // on-screen and click the tab directly at its coordinates.
+                    if let orig = originalPosition { setWindowPosition(window, orig) }
                     AXUIElementPerformAction(window, "AXRaise" as CFString)
                     Thread.sleep(forTimeInterval: 0.2)
                     clickAt(CGPoint(x: p.x + s.width / 2, y: p.y + s.height / 2))
@@ -408,13 +417,21 @@ final class StatusController: NSObject, NSApplicationDelegate {
         }
         log("AX: valor-despues=\(checkboxValue(checkbox) ?? "?") cambiada=\(changed)")
 
-        // Close the Settings window after toggling so it never lingers.
-        // (It reopens in the background on the next toggle.)
+        // Restore the window position (so any frame restore behaves sanely)
+        // and close it, so nothing ever lingers on screen.
+        if let orig = originalPosition { setWindowPosition(window, orig) }
         if let close = findCloseButton(of: window) {
             AXUIElementPerformAction(close, "AXPress" as CFString)
         }
         settingsWindow = nil
         return changed
+    }
+
+    private func setWindowPosition(_ window: AXUIElement, _ point: CGPoint) {
+        var p = point
+        if let val = AXValueCreate(.cgPoint, &p) {
+            AXUIElementSetAttributeValue(window, "AXPosition" as CFString, val)
+        }
     }
 
     private func axString(_ el: AXUIElement, _ attr: String) -> String? {
